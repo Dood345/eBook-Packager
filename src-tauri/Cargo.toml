@@ -1,0 +1,32 @@
+[package]
+name = "ebook-packager"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+# The main tauri dependency -- NO features list needed for the dialog
+tauri = { version = "2.0", features = [] }
+tauri-plugin-shell = "2.0"
+
+# The dialog plugin itself
+tauri-plugin-dialog = "2.0"
+
+# The rest of your dependencies
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+dotenvy = "0.15"
+futures = "0.3"
+zip = "2.2.0"
+
+[features]
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
