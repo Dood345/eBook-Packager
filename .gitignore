@@ -11,8 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
-.env
-src-tauri/.env
+*.env
+
 
 # Editor directories and files
 .vscode/*
@@ -24,4 +24,3 @@ src-tauri/.env
 *.njsproj
 *.sln
 *.sw?
-.env
