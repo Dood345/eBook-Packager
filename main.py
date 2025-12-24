@@ -36,6 +36,77 @@ class AuthorSelectionDialog(tk.Toplevel):
             self.selected_author = self.listbox.get(selection[0])
             self.destroy()
 
+class BulkImportDialog(tk.Toplevel):
+    def __init__(self, parent, callback):
+        super().__init__(parent.root)
+        self.callback = callback # Function to call with parsed data
+        self.title("Bulk Import")
+        self.geometry("600x500")
+        
+        # Instructions
+        instr = (
+            "Paste your book list below.\n"
+            "Format per line: Title, Author, Year\n"
+            "Example:\n"
+            "Dune, Frank Herbert, 1965\n"
+            "The Hobbit, J.R.R. Tolkien, 1937"
+        )
+        ttk.Label(self, text=instr, padding=10).pack(anchor=tk.W)
+        
+        # Text Area
+        frame = ttk.Frame(self, padding=5)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.text_area = tk.Text(frame, height=15)
+        self.text_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scroll = ttk.Scrollbar(frame, command=self.text_area.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.text_area.config(yscrollcommand=scroll.set)
+        
+        # Buttons/Status
+        btn_frame = ttk.Frame(self, padding=10)
+        btn_frame.pack(fill=tk.X)
+        
+        self.status_lbl = ttk.Label(btn_frame, text="")
+        self.status_lbl.pack(side=tk.LEFT)
+        
+        ttk.Button(btn_frame, text="Process List", command=self.process).pack(side=tk.RIGHT)
+        
+    def process(self):
+        content = self.text_area.get("1.0", tk.END).strip()
+        if not content:
+            return
+            
+        lines = content.split('\n')
+        total = len(lines)
+        processed = 0
+        
+        self.status_lbl.config(text=f"Processing 0/{total}...")
+        self.update()
+        
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            
+            # Simple CSV-like parsing
+            parts = [p.strip() for p in line.split(',')]
+            
+            title = parts[0] if len(parts) > 0 else ""
+            author = parts[1] if len(parts) > 1 else ""
+            year = parts[2] if len(parts) > 2 else ""
+            
+            if title:
+                # Call the main app's search/add method
+                self.callback(title, author, year)
+            
+            processed += 1
+            self.status_lbl.config(text=f"Processing {processed}/{total}...")
+            self.update()
+            
+        messagebox.showinfo("Complete", f"Processed {processed} lines.")
+        self.destroy()
+
 class EbookPackager:
     def __init__(self, root):
         self.root = root
@@ -74,12 +145,20 @@ class EbookPackager:
         self.year_entry = ttk.Entry(main_frame, width=40)
         self.year_entry.grid(row=3, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
         
-        # Add book button
-        ttk.Button(
+        # Add book button (Modified to allow search trigger via code)
+        self.add_btn = ttk.Button(
             main_frame, 
             text="Search & Add", 
-            command=self.add_book
-        ).grid(row=1, column=2, rowspan=3, padx=5, pady=5, sticky=(tk.N, tk.S))
+            command=self.add_book_from_ui
+        )
+        self.add_btn.grid(row=1, column=2, rowspan=2, padx=5, pady=5, sticky=(tk.N, tk.S))
+        
+        # Import List Button
+        ttk.Button(
+            main_frame, 
+            text="Import List", 
+            command=self.open_import_dialog
+        ).grid(row=3, column=2, padx=5, pady=5, sticky=(tk.N, tk.S))
         
         # Separator
         ttk.Separator(main_frame, orient='horizontal').grid(
@@ -118,9 +197,9 @@ class EbookPackager:
         self.tree.bind('<Button-1>', self.on_tree_click)
         
         # Bind keys
-        self.title_entry.bind('<Return>', lambda e: self.add_book())
-        self.author_entry.bind('<Return>', lambda e: self.add_book())
-        self.year_entry.bind('<Return>', lambda e: self.add_book())
+        self.title_entry.bind('<Return>', lambda e: self.add_book_from_ui())
+        self.author_entry.bind('<Return>', lambda e: self.add_book_from_ui())
+        self.year_entry.bind('<Return>', lambda e: self.add_book_from_ui())
         
         # Buttons
         btn_frame = ttk.Frame(main_frame)
@@ -169,66 +248,79 @@ class EbookPackager:
                     symbol = "☑" if book['get_audiobook'] else "☐"
                     self.tree.set(item_id, 'audiobook', symbol)
 
-    def add_book(self):
+    def add_book_from_ui(self):
+        """Called by UI button/enter key. Reads fields and calls main logic."""
         title = self.title_entry.get().strip()
         author = self.author_entry.get().strip()
         year = self.year_entry.get().strip()
         
+        if self.search_and_add(title, author, year):
+            # Clear input fields on success
+            self.title_entry.delete(0, tk.END)
+            self.author_entry.delete(0, tk.END)
+            self.year_entry.delete(0, tk.END)
+
+    def open_import_dialog(self):
+        BulkImportDialog(self, self.search_and_add)
+        
+    def search_and_add(self, title, author, year) -> bool:
+        """
+        Main logic to search, disambiguate, and add a book.
+        Returns True if added successfully, False otherwise.
+        """
         if not title:
-            messagebox.showwarning("Input Error", "Please enter at least a title")
-            return
+            # Only warn if it came from manual UI interaction to avoid spamming alerts in bulk
+            # But since we use this for bulk too, maybe just log text?
+            return False
             
-        self.status_label.config(text="Searching...")
+        self.status_label.config(text=f"Searching: {title}...")
         self.root.update()
-        # Disable add button temporarily? No reference to it, skipping.
         
         # 1. Search
         query = title
         if year:
             query = f"{title} {year}"
             
-        # Increased limit for better selection
         books = search_for_book(query=query, author=author, limit=20)
         
         if not books:
-            messagebox.showinfo("Not Found", f"No books found for '{title}'")
-            self.status_label.config(text="Ready")
-            return
+            self.status_label.config(text=f"Not found: {title}")
+            return False
             
         # 2. Disambiguate Author
         selected_author = author
         if not author:
             unique_authors = get_unique_authors(books)
             if len(unique_authors) > 1:
+                # If we are in bulk mode (how do we know? We don't, but we can check if a dialog is already open?)
+                # For now, it will pop up for each ambiguous one. This is desired behavior or acceptable trade-off.
                 dialog = AuthorSelectionDialog(self.root, unique_authors)
                 if dialog.selected_author:
                     selected_author = dialog.selected_author
                 else:
                     self.status_label.config(text="Selection cancelled")
-                    return
+                    return False
         
         # 3. Filter and Select Best
         filtered_books = filter_by_author(books, selected_author)
         if not filtered_books:
-            # Fallback (shouldn't happen if logic is correct)
             filtered_books = books 
             
         best_matches = get_largest_files(filtered_books, n=3)
         
         if not best_matches:
-            messagebox.showerror("Error", "Could not find a valid file match.")
-            return
+            # messagebox.showerror("Error", "Could not find a valid file match.") 
+            # Suppress error box for bulk flow to avoid blocking
+            self.status_label.config(text=f"No valid matches: {title}")
+            return False
             
         primary_match = best_matches[0]
             
         # 4. Add to List
-        # Check duplicates (check if primary MD5 is already in list)
         for b in self.books_to_download:
-            # Check if any of the new MD5s match existing primary MD5s
             if b['primary_md5'] == primary_match['md5']:
-                messagebox.showinfo("Duplicate", "This specific file is already in the list.")
-                self.status_label.config(text="Ready")
-                return
+                self.status_label.config(text=f"Duplicate: {title}")
+                return False
 
         # Prepare entry
         entry = primary_match.copy()
@@ -251,11 +343,8 @@ class EbookPackager:
         # Insert into tree using 'iid' as the index in our list for easy lookup
         self.tree.insert('', tk.END, iid=str(index), values=(display_title, display_author, info_text, "☐"))
         
-        # Reset input
-        self.title_entry.delete(0, tk.END)
-        self.author_entry.delete(0, tk.END)
-        self.year_entry.delete(0, tk.END)
         self.status_label.config(text=f"Added: {display_title}")
+        return True
 
     def remove_book(self):
         selection = self.tree.selection()

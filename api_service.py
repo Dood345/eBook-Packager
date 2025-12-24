@@ -236,18 +236,30 @@ def filter_by_author(books: List[Dict[str, Any]], author: str) -> List[Dict[str,
     author_lower = author.lower()
     return [b for b in books if b.get('author') and author_lower in b['author'].lower()]
 
-def get_largest_files(books: List[Dict[str, Any]], n: int = 3) -> List[Dict[str, Any]]:
-    """Returns the top n books with the largest file sizes."""
+def get_largest_files(books: List[Dict[str, Any]], n: int = 3, max_size: int = None) -> List[Dict[str, Any]]:
+    """
+    Returns the top n books with the largest file sizes.
+    If max_size is provided (in bytes), filters out files larger than that limit.
+    """
     if not books:
         return []
         
     # Enrich books with parsed size if not present
+    valid_books = []
+    
     for book in books:
         if '_parsed_size' not in book:
             book['_parsed_size'] = parse_size(book.get('size', '0'))
             
+        # Filter by max_size if specified
+        if max_size is not None:
+             if book['_parsed_size'] > max_size:
+                 continue
+                 
+        valid_books.append(book)
+            
     # Sort by size descending
-    sorted_books = sorted(books, key=lambda x: x['_parsed_size'], reverse=True)
+    sorted_books = sorted(valid_books, key=lambda x: x['_parsed_size'], reverse=True)
     return sorted_books[:n]
 
 def get_filename_from_response(response: requests.Response, default_name: str) -> str:
