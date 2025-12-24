@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import zipfile
 from pathlib import Path
+import concurrent.futures
+import threading
 from api_service import search_for_book, download_book, get_unique_authors, filter_by_author, get_largest_files
 
 class AuthorSelectionDialog(tk.Toplevel):
@@ -41,7 +43,7 @@ class BulkImportDialog(tk.Toplevel):
         super().__init__(parent.root)
         self.callback = callback # Function to call with parsed data
         self.title("Bulk Import")
-        self.geometry("600x500")
+        self.geometry("400x500")
         
         # Instructions
         instr = (
@@ -111,7 +113,7 @@ class EbookPackager:
     def __init__(self, root):
         self.root = root
         self.root.title("Anna's Archive Bulk Downloader")
-        self.root.geometry("1000x700")
+        self.root.geometry("450x700")
         
         # Store book info: [{title, author, md5, size, extension, all_md5s, get_audiobook}, ...]
         self.books_to_download = []
@@ -179,13 +181,13 @@ class EbookPackager:
         
         self.tree.heading('title', text='Title')
         self.tree.heading('author', text='Author')
-        self.tree.heading('info', text='Ebook Info')
-        self.tree.heading('audiobook', text='Get Audiobook?')
+        self.tree.heading('info', text='Info')
+        self.tree.heading('audiobook', text='Audio?')
         
-        self.tree.column('title', width=300)
-        self.tree.column('author', width=200)
-        self.tree.column('info', width=250)
-        self.tree.column('audiobook', width=100, anchor='center')
+        self.tree.column('title', width=140, stretch=True)
+        self.tree.column('author', width=90, stretch=True)
+        self.tree.column('info', width=90, stretch=True)
+        self.tree.column('audiobook', width=45, anchor='center', stretch=True)
         
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscroll=scrollbar.set)
@@ -203,18 +205,18 @@ class EbookPackager:
         
         # Buttons
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.grid(row=7, column=0, columnspan=3, pady=5, sticky=tk.W)
+        btn_frame.grid(row=7, column=0, columnspan=3, pady=10, sticky=(tk.W, tk.E))
         
-        ttk.Button(btn_frame, text="Remove Selected", command=self.remove_book).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Clear All", command=self.clear_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Remove", command=self.remove_book).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Clear", command=self.clear_all).pack(side=tk.LEFT, padx=5)
         
         # Download button
         self.download_btn = ttk.Button(
-            main_frame, 
-            text="Download All as ZIP", 
-            command=self.download_all
+            btn_frame, 
+            text="Download All", 
+            command=self.start_download_thread
         )
-        self.download_btn.grid(row=8, column=0, columnspan=3, pady=10)
+        self.download_btn.pack(side=tk.RIGHT, padx=5)
         
         # Progress bar
         self.progress = ttk.Progressbar(main_frame, length=500, mode='determinate')
@@ -306,7 +308,9 @@ class EbookPackager:
         if not filtered_books:
             filtered_books = books 
             
-        best_matches = get_largest_files(filtered_books, n=3)
+        # 15MB Limit logic here (approx 15.7 million bytes)
+        MAX_SIZE = 15 * 1024 * 1024
+        best_matches = get_largest_files(filtered_books, n=3, max_size=MAX_SIZE)
         
         if not best_matches:
             # messagebox.showerror("Error", "Could not find a valid file match.") 
@@ -373,6 +377,152 @@ class EbookPackager:
                 self.tree.insert('', tk.END, iid=str(i), values=(book['title'], book['author'], info_text, audio_symbol))
                 
             self.status_label.config(text="Book(s) removed")
+    
+    def start_download_thread(self):
+        if not self.books_to_download:
+            messagebox.showwarning("No Books", "Please add books to download")
+            return
+            
+        zip_path = filedialog.asksaveasfilename(
+            defaultextension=".zip",
+            filetypes=[("ZIP files", "*.zip"), ("All files", "*.*")],
+            initialfile="annas_archive_books.zip"
+        )
+        
+        if not zip_path:
+            return
+
+        self.download_btn.config(state='disabled')
+        self.status_label.config(text="Starting downloads...")
+        
+        # Run in thread
+        t = threading.Thread(target=self.download_all_threaded, args=(zip_path,))
+        t.start()
+
+    def update_progress(self, value, maximum, label):
+        self.progress['maximum'] = maximum
+        self.progress['value'] = value
+        self.status_label.config(text=f"Processed: {label}")
+        
+    def download_all_threaded(self, zip_path):
+        temp_dir = Path("temp_downloads")
+        temp_dir.mkdir(exist_ok=True)
+        
+        downloaded_files = [] # (file_path, arcname)
+        failed_books = []
+        
+        # Calculate total tasks
+        total_ops = 0
+        for b in self.books_to_download:
+            total_ops += 1
+            if b.get('get_audiobook'):
+                total_ops += 1
+                
+        # Helper to create safe folder names
+        def safe_name(text):
+            return "".join([c for c in text if c.isalpha() or c.isdigit() or c==' ']).strip()
+                
+        def download_worker(book, is_audiobook):
+            title = book.get('title', 'Unknown')
+            author = book.get('author', 'Unknown')
+            clean_title = safe_name(title)
+            clean_author = safe_name(author)
+            
+            if not is_audiobook:
+                # EBOOK
+                md5_list = book.get('all_md5s', [book.get('md5')])
+                ext = book.get('ext', 'epub')
+                
+                content = download_book(md5_list)
+                if content:
+                    safe_filename = f"{clean_title}".replace(' ', '_')
+                    file_path = temp_dir / f"{safe_filename}.{ext}"
+                    with open(file_path, 'wb') as f:
+                        f.write(content)
+                    arcname = f"{clean_author}/{clean_title}/{safe_filename}.{ext}"
+                    return (True, file_path, arcname, f"{title} (Ebook)")
+                else:
+                    return (False, None, None, f"{title} (Ebook)")
+            else:
+                # AUDIOBOOK
+                # Search first
+                ab_books = search_for_book(query=title, author=author, limit=10, file_type='audiobook')
+                if ab_books:
+                    filtered_ab = filter_by_author(ab_books, author)
+                    if not filtered_ab: filtered_ab = ab_books
+                    best_ab_matches = get_largest_files(filtered_ab, n=3)
+                    
+                    if best_ab_matches:
+                         ab_md5s = [b['md5'] for b in best_ab_matches]
+                         ab_content = download_book(ab_md5s)
+                         if ab_content:
+                             ab_ext = best_ab_matches[0].get('ext', 'mp3')
+                             safe_filename_ab = f"{clean_title}_AUDIOBOOK".replace(' ', '_')
+                             file_path_ab = temp_dir / f"{safe_filename_ab}.{ab_ext}"
+                             with open(file_path_ab, 'wb') as f:
+                                 f.write(ab_content)
+                             arcname_ab = f"{clean_author}/{clean_title}/{safe_filename_ab}.{ab_ext}"
+                             return (True, file_path_ab, arcname_ab, f"{title} (Audiobook)")
+                
+                return (False, None, None, f"{title} (Audiobook)")
+
+        completed_ops = 0
+        
+        # Parallel Execution
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_item = {}
+            for book in self.books_to_download:
+                # Submit Ebook
+                f_ebook = executor.submit(download_worker, book, False)
+                future_to_item[f_ebook] = "Ebook"
+                
+                # Submit Audiobook if checked
+                if book.get('get_audiobook'):
+                    f_audio = executor.submit(download_worker, book, True)
+                    future_to_item[f_audio] = "Audiobook"
+            
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(future_to_item):
+                completed_ops += 1
+                result = future.result()
+                success, path, arcname, label = result
+                
+                if success:
+                    downloaded_files.append((path, arcname))
+                else:
+                    failed_books.append(label)
+                    
+                # Update UI thread
+                self.root.after(0, lambda v=completed_ops, t=total_ops, l=label: self.update_progress(v, t, l))
+
+        # Create ZIP in thread
+        self.root.after(0, lambda: self.status_label.config(text="Creating ZIP..."))
+        
+        if downloaded_files:
+            try:
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for file_path, arcname in downloaded_files:
+                        zipf.write(file_path, arcname)
+                        
+                msg = f"Downloaded {len(downloaded_files)} files to:\n{zip_path}"
+                if failed_books:
+                    msg += f"\n\nFailed items:\n" + "\n".join(failed_books[:5])
+                
+                self.root.after(0, lambda: messagebox.showinfo("Complete", msg))
+                self.root.after(0, lambda: self.status_label.config(text="Download Complete"))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Zip Error: {e}"))
+        else:
+            self.root.after(0, lambda: messagebox.showerror("Failed", "No files downloaded."))
+            self.root.after(0, lambda: self.status_label.config(text="Failed"))
+            
+        # Cleanup
+        try:
+            import shutil
+            shutil.rmtree(temp_dir)
+        except: pass
+        
+        self.root.after(0, lambda: self.download_btn.config(state='normal'))
     
     def clear_all(self):
         if self.books_to_download:
