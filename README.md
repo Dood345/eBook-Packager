@@ -1,19 +1,20 @@
 # Anna's Archive Downloader
 
-A minimal, powerful tool to search and download ebooks (and audiobooks!) directly from Anna's Archive.
+A smart, resilient tool to search and download ebooks (and audiobooks!) directly from Anna's Archive.
 
 ## Features
-- **Search & Download**: Enter a title and author to automatically find and download books.
-- **Bulk Download**: Add multiple books to a list and download them all as a verified ZIP package.
-- **Smart Fallback**: Automatically tries multiple download mirrors provided by Anna's Archive.
-- **Audiobook Support**: If an ebook isn't found, it can check for audiobook versions (or you can request them).
+- **Spreadsheet Interface**: Clean table view allows granular control over your download list.
+- **Smart Selection**: Automatically detects and selects the highest quality (largest) files.
+- **Resilience**: Stores the top 3 best mirrors for every book and automatically falls back if one fails.
+- **Audiobook Support**: Toggle "Get Audiobook" per row to search for and download an audiobook version alongside your ebook.
+- **Structured Output**: Downloads are organized into folders: `Author/Title/File`.
 
 ## Setup
 1.  **Get an API Key**:
     You need a RapidAPI key for the [Anna's Archive API](https://rapidapi.com/alexander-koba/api/annas-archive-api).
     
 2.  **Environment Variables**:
-    Create a `.env` file in the project root (see `.env.example`):
+    Create a `.env` file in the project root:
     ```env
     ANNAS_ARCHIVE_API_KEY=your_rapidapi_key_here
     ```
@@ -29,48 +30,53 @@ Run the main application:
 ```bash
 python main.py
 ```
-1.  Enter the **Title** and **Author**.
-2.  (Optional) Enter the **Year**.
-3.  Click **Add to List**.
-4.  Repeat for as many books as you want.
-5.  Click **Download All as ZIP**.
+
+1.  **Search & Add**: 
+    - Enter **Title** and optional **Author**.
+    - Press `Enter` or click **Search & Add**.
+    - If multiple authors are found (e.g. "King"), a dialog will ask you to select the correct one.
+2.  **Manage List**:
+    - The book is added to your table.
+    - **Audiobook?**: Click the checkbox cell in the "Get Audiobook?" column to opt-in for an audiobook version.
+3.  **Download**:
+    - Click **Download All as ZIP**.
+    - Select a save location.
+    - Resulting ZIP will contain organized folders.
 
 ### Command Line / Scripting
-You can use the `api_service` directly in your own scripts:
+You can use the `api_service` logic helpers in your own scripts:
 
 ```python
-from api_service import download_book_by_title
+from api_service import search_for_book, download_book, get_largest_files
 
-# Download a book and get the raw bytes
-data = download_book_by_title("The Hobbit", "J.R.R. Tolkien")
+# Search for matches
+books = search_for_book("The Hobbit", "J.R.R. Tolkien")
 
-if data:
-    with open("The Hobbit.epub", "wb") as f:
-        f.write(data)
+# Get top 3 best files (largest)
+best_matches = get_largest_files(books, n=3)
+md5s = [b['md5'] for b in best_matches]
+
+# Download (tries all MD5s sequentially)
+data = download_book(md5s)
 ```
 
 ## Under the Hood
-This application is powered by the **Anna's Archive API** via RapidAPI.
+This application uses a sophisticated logic flow to ensure you get the best file:
 
-### Logic Flow
-1.  **Search**: 
-    The app sends a search query (Title + Author) to the API.
-    - *Default filters*: searches for `epub`, `pdf`, `mobi`, `azw3`.
-    - *Categories*: `fiction`, `nonfiction`, etc.
-    
-2.  **Filter**:
-    It retrieves the top 5 most relevant results, containing metadata and MD5 hashes.
-
-3.  **Download**:
-    Use the `download` endpoint with the specific MD5 hash to get direct download links (e.g., from Libgen mirrors).
-    - Checks links sequentially until one works.
-    - No browser automation or CAPTCHAs required (pure API).
+1.  **Search & Disambiguate**: 
+    - Real-time API search ensures valid metadata.
+    - User intervention prevents "wrong author" downloads.
+2.  **Smart Selection**:
+    - Instead of guessing, we parse file sizes (KB, MB, GB) from the API.
+    - We queue the **Top 3** largest (highest quality) files for each book.
+3.  **Resilient Download**:
+    - The downloader attempts the largest file first.
+    - If the link is dead or 404s, it seamlessly tries the next best option.
+4.  **Structure**:
+    - Files are sanitized and saved as:
+      `<Author>/<Book Title>/<Filename>.<ext>`
 
 ### Libraries
-- **`requests`**: Handles all HTTP communication with the API and file downloads.
-- **`tkinter`**: Provides the lightweight graphical user interface (stdlib).
-- **`python-dotenv`**: Securely manages the API key.
-
-## Requirements
-- Python 3.8+
-- An active RapidAPI key for Anna's Archive API.
+- **`requests`**: API communication.
+- **`tkinter`**: GUI (Treeview/Spreadsheet).
+- **`python-dotenv`**: Config management.
