@@ -4,6 +4,7 @@ import zipfile
 from pathlib import Path
 import concurrent.futures
 import threading
+import queue
 from api_service import search_for_book, download_book, get_unique_authors, filter_by_author, get_largest_files
 
 class AuthorSelectionDialog(tk.Toplevel):
@@ -118,7 +119,21 @@ class EbookPackager:
         # Store book info: [{title, author, md5, size, extension, all_md5s, get_audiobook}, ...]
         self.books_to_download = []
         
+        # Logging Queue
+        self.log_queue = queue.Queue()
+        self.check_log_queue()
+        
         self.create_widgets()
+
+    def check_log_queue(self):
+        """Polls the queue and prints messages to console (safe thread bridging)"""
+        try:
+            while True:
+                msg = self.log_queue.get_nowait()
+                print(msg) # Main thread safe print
+        except queue.Empty:
+            pass
+        self.root.after(100, self.check_log_queue)
     
     def create_widgets(self):
         # Main frame
@@ -428,12 +443,24 @@ class EbookPackager:
             clean_title = safe_name(title)
             clean_author = safe_name(author)
             
+            # Logging Helpers
+            type_lbl = "Ebook" if not is_audiobook else "Audiobook"
+            def log_msg(txt):
+                self.log_queue.put(f"[{title[:15]}...] {txt}")
+                
+            def prog_cb(curr, total):
+                 # Optional: Emit simplified progress if needed, but might be too spammy for console
+                 # Just log every 25% or something?
+                 # For now, let's just stick to status updates to avoid "vomiting"
+                 pass
+            
             if not is_audiobook:
                 # EBOOK
                 md5_list = book.get('all_md5s', [book.get('md5')])
                 ext = book.get('ext', 'epub')
                 
-                content = download_book(md5_list)
+                # Ebook Timeout: 50s
+                content = download_book(md5_list, log_callback=log_msg, progress_callback=prog_cb, timeout=50)
                 if content:
                     safe_filename = f"{clean_title}".replace(' ', '_')
                     file_path = temp_dir / f"{safe_filename}.{ext}"
@@ -446,15 +473,20 @@ class EbookPackager:
             else:
                 # AUDIOBOOK
                 # Search first
+                log_msg("Searching for audiobook version...")
                 ab_books = search_for_book(query=title, author=author, limit=10, file_type='audiobook')
                 if ab_books:
                     filtered_ab = filter_by_author(ab_books, author)
                     if not filtered_ab: filtered_ab = ab_books
+                    
+                    # Size limit for Audio? Maybe higher? Let's stick to default (no limit or user specified?)
+                    # User only specified 15MB for epubs.
                     best_ab_matches = get_largest_files(filtered_ab, n=3)
                     
                     if best_ab_matches:
                          ab_md5s = [b['md5'] for b in best_ab_matches]
-                         ab_content = download_book(ab_md5s)
+                         # Audiobook Timeout: 120s
+                         ab_content = download_book(ab_md5s, log_callback=log_msg, timeout=120)
                          if ab_content:
                              ab_ext = best_ab_matches[0].get('ext', 'mp3')
                              safe_filename_ab = f"{clean_title}_AUDIOBOOK".replace(' ', '_')

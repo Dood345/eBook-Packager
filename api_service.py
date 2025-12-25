@@ -90,20 +90,26 @@ def search_for_book(query: str, author: str = "", limit: int = 20, file_type: st
              print(f"Response: {e.response.text}")
         return []
 
-def download_book(md5_hashes: List[str]) -> Optional[bytes]:
+def download_book(md5_hashes: List[str], log_callback=None, progress_callback=None, timeout=60) -> Optional[bytes]:
     """
     Download a book using a list of MD5 hashes via the API.
+    log_callback: function(str) -> void
+    progress_callback: function(current_bytes, total_bytes) -> void
+    timeout: read timeout in seconds
     """
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+        else:
+            print(msg)
+
     if not md5_hashes:
         return None
     
-    print(f"\n{'='*60}")
-    print(f"Attempting to download book")
-    print(f"   MD5 hashes to try: {len(md5_hashes)}")
-    print(f"{ '='*60}\n")
+    log(f"Attempting download ({len(md5_hashes)} candidates)...")
     
     for i, md5_hash in enumerate(md5_hashes):
-        print(f"\n[{i+1}/{len(md5_hashes)}] Trying MD5: {md5_hash}")
+        log(f"Trying source {i+1}/{len(md5_hashes)}: {md5_hash}")
         
         try:
             querystring = {"md5": md5_hash}
@@ -112,50 +118,56 @@ def download_book(md5_hashes: List[str]) -> Optional[bytes]:
             link_response = requests.get(
                 DOWNLOAD_URL,
                 headers=get_api_headers(),
-                params=querystring
+                params=querystring,
+                timeout=30 # Short timeout for metadata
             )
             
             if not link_response.ok:
-                print(f"  ✗ API returned status {link_response.status_code}")
-                # If 404 or 500, maybe try next hash
+                log(f"  > API Status: {link_response.status_code}")
                 continue
             
             response_data = link_response.json()
             
-            # The API returns a list of strings (urls)
             if not isinstance(response_data, list) or len(response_data) == 0:
-                print(f'  - No download URLs available for this MD5')
+                log(f'  > No URLs for this source')
                 continue
             
-            # Try valid links
+            # Step 2: Try Links
             for download_url in response_data:
                 if not download_url.startswith("http"): 
                     continue
                     
-                print(f"  -> Downloading from: {download_url[:60]}...")
+                log(f"  > Requesting file from: {download_url[:40]}...")
                 
                 try:
-                    file_response = requests.get(
-                        download_url,
-                        timeout=120,
-                        stream=True
-                    )
-                    
-                    if file_response.ok:
-                        content = file_response.content
-                        size_mb = len(content) / (1024 * 1024)
-                        print(f"  + Success! Downloaded {size_mb:.2f} MB")
-                        return content
-                    else:
-                        print(f"  - Link failed (status {file_response.status_code})")
+                    # Stream the download
+                    with requests.get(download_url, timeout=timeout, stream=True) as file_response:
+                        if file_response.ok:
+                            total_size = int(file_response.headers.get('content-length', 0))
+                            data_chunks = []
+                            downloaded_size = 0
+                            
+                            for chunk in file_response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    data_chunks.append(chunk)
+                                    downloaded_size += len(chunk)
+                                    if progress_callback and total_size > 0:
+                                        progress_callback(downloaded_size, total_size)
+                                        
+                            content = b"".join(data_chunks)
+                            size_mb = len(content) / (1024 * 1024)
+                            log(f"  > Success! ({size_mb:.2f} MB)")
+                            return content
+                        else:
+                            log(f"  > Link failed ({file_response.status_code})")
                 except Exception as e:
-                    print(f"  - Link error: {e}")
+                    log(f"  > Link error: {str(e)[:100]}") # Truncate error
                     
         except Exception as e:
-            print(f"  - Error processing MD5 {md5_hash}: {str(e)}")
+            log(f"  > MD5 Error: {str(e)}")
             continue
             
-    print(f"\n- All download attempts failed")
+    log(f"All sources failed.")
     return None
 
 def download_book_by_title(title: str, author: str = "", file_type: str = "ebook") -> Optional[bytes]:
